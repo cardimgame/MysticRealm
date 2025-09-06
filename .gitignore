@@ -1,0 +1,52 @@
+# --- Python cache / bytecode ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# --- Virtual Environments ---
+venv/
+.env/
+.venv/
+env/
+ENV/
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Sistema Operacional ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Logs / temporários ---
+*.log
+*.tmp
+*.bak
+*.old
+
+# --- Builds / distribuições ---
+build/
+dist/
+*.egg-info/
+*.spec
+
+# --- Arquivos específicos do projeto ---
+# saves e configs locais não devem ir para o repo
+saves/
+settings.json
+*.db
+*.sqlite3
+
+# --- Assets gerados automaticamente ---
+assets/generated/
+assets/tmp/
+assets/cache/
+
+# --- Outros ---
+# Arquivos exportados de IA, análises locais, etc
+*_analysis_*.json
