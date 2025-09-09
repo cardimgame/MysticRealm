@@ -1,0 +1,84 @@
+    import os
+    import ast
+    import re
+    import csv
+
+    # Caminho raiz do projeto
+    root_dir = r"C:\Users\ygcardim\Documents\Projetos\MysticRealm"
+    report_file = os.path.join(root_dir, "relatorio_arquivos_filtrado.csv")
+
+    # Pastas e arquivos permitidos
+    allowed_folders = {"assets", "core", "entities", "gameplay", "saves", "systems", "tools", "ui"}
+    allowed_root_files = {"main.py", "auto_analysis.py", "corrigir_directone.py", "settings.json", "README.md"}
+
+    # Função para listar arquivos Python
+    def list_python_files(root):
+        python_files = []
+        for root_path, _, files in os.walk(root):
+            folder_name = os.path.basename(root_path)
+            for file in files:
+                file_lower = file.lower()
+                # Filtra pelas pastas permitidas ou arquivos da raiz
+                if folder_name in allowed_folders or (root_path == root and file in allowed_root_files):
+                    if file.endswith(".py") or file in allowed_root_files:
+                        python_files.append(os.path.join(root_path, file))
+        return python_files
+
+    # Função para extrair imports estáticos e dinâmicos
+    def get_imported_modules(file_path):
+        imported = set()
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                tree = ast.parse(content)
+        except Exception:
+            return imported
+        
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for n in node.names:
+                    imported.add(n.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imported.add(node.module)
+        
+        dynamic_patterns = [
+            r"importlib\.import_module\(['\"]([a-zA-Z0-9_\.]+)['\"]\)",
+            r"__import__\(['\"]([a-zA-Z0-9_\.]+)['\"]\)",
+            r"exec\(['\"](.+\.py)['\"]\)"
+        ]
+        for pattern in dynamic_patterns:
+            matches = re.findall(pattern, content)
+            for m in matches:
+                imported.add(m.replace(".", os.sep) + ".py" if not m.endswith(".py") else m)
+        
+        return imported
+
+    # Listar arquivos Python filtrados
+    python_files = list_python_files(root_dir)
+    imports_map = {file: set() for file in python_files}
+
+    # Mapear quem importa quem
+    for file in python_files:
+        imported_modules = get_imported_modules(file)
+        for module in imported_modules:
+            module_path = os.path.normpath(os.path.join(root_dir, *module.split(".")) + ".py") if not module.endswith(".py") else os.path.normpath(os.path.join(root_dir, module))
+            if os.path.exists(module_path) and module_path in imports_map:
+                imports_map[module_path].add(file)
+
+    # Criar CSV filtrado
+    with open(report_file, "w", newline="", encoding="utf-8") as csvfile:
+        fieldnames = ["Arquivo", "Pasta", "Referenciado_por", "Status"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        for file, importers in imports_map.items():
+            status = "Ativo" if importers else "Possivelmente Obsoleto"
+            writer.writerow({
+                "Arquivo": os.path.basename(file),
+                "Pasta": os.path.relpath(os.path.dirname(file), root_dir),
+                "Referenciado_por": "; ".join([os.path.relpath(i, root_dir) for i in importers]),
+                "Status": status
+            })
+
+    print(f"Relatório filtrado gerado com sucesso em '{report_file}'")

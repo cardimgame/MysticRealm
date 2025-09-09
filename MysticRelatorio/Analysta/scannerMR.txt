@@ -1,0 +1,99 @@
+import os
+import ast
+import csv
+
+# Caminho raiz do projeto
+root_dir = r"C:\Users\ygcardim\Documents\Projetos\MysticRealm"
+report_file = os.path.join(root_dir, "scanner_integridade.csv")
+
+# Pastas e arquivos ativos
+allowed_folders = {"assets", "core", "entities", "gameplay", "saves", "systems", "tools", "ui"}
+allowed_root_files = {"main.py"}
+
+# Arquivos movidos para archive_obsolete
+archived_files = {
+    os.path.normpath(os.path.join(root_dir, "settings.json")),
+    os.path.normpath(os.path.join(root_dir, "core", "config.py")),
+    os.path.normpath(os.path.join(root_dir, "systems", "items.py")),
+    os.path.normpath(os.path.join(root_dir, "tools", "cleanup_project.py")),
+    os.path.normpath(os.path.join(root_dir, "tools", "migrate_grass_assets.py")),
+    os.path.normpath(os.path.join(root_dir, "ui", "options_menu.py")),
+    os.path.normpath(os.path.join(root_dir, "ui", "pause_menu.py")),
+}
+
+# Listar arquivos Python ativos
+def list_active_files(root):
+    files_list = []
+    for dirpath, _, files in os.walk(root):
+        folder_name = os.path.basename(dirpath)
+        for file in files:
+            full_path = os.path.normpath(os.path.join(dirpath, file))
+            if full_path in archived_files:
+                continue
+            if folder_name in allowed_folders or (dirpath == root and file in allowed_root_files):
+                if file.endswith(".py"):
+                    files_list.append(full_path)
+    return files_list
+
+# Checar sintaxe sem executar
+def check_syntax(file_path):
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            source = f.read()
+        tree = ast.parse(source)
+        return "OK", tree
+    except Exception as e:
+        return f"Erro: {e}", None
+
+# Extrair funções e classes definidas
+def extract_defs(tree):
+    funcs, classes = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            funcs.add(node.name)
+        elif isinstance(node, ast.ClassDef):
+            classes.add(node.name)
+    return funcs, classes
+
+# Extrair imports
+def extract_imports(tree):
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for n in node.names:
+                imports.add(n.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imports.add(node.module)
+    return imports
+
+# Gerar relatório
+active_files = list_active_files(root_dir)
+
+with open(report_file, "w", newline="", encoding="utf-8") as csvfile:
+    fieldnames = ["Arquivo", "Sintaxe", "Imports quebrados", "Funções definidas", "Classes definidas", "Sugestão"]
+    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+    writer.writeheader()
+
+    for file_path in active_files:
+        syntax_status, tree = check_syntax(file_path)
+        broken_imports = []
+        funcs, classes = set(), set()
+        if tree:
+            funcs, classes = extract_defs(tree)
+            imports = extract_imports(tree)
+            # Verificar se import existe no projeto
+            for mod in imports:
+                mod_path = os.path.normpath(os.path.join(root_dir, *mod.split(".")) + ".py")
+                if not os.path.exists(mod_path):
+                    broken_imports.append(mod)
+        writer.writerow({
+            "Arquivo": os.path.relpath(file_path, root_dir),
+            "Sintaxe": syntax_status,
+            "Imports quebrados": "; ".join(broken_imports) if broken_imports else "Nenhum",
+            "Funções definidas": "; ".join(funcs) if funcs else "Nenhuma",
+            "Classes definidas": "; ".join(classes) if classes else "Nenhuma",
+            "Sugestão": "Manter" if syntax_status=="OK" else "Revisar"
+        })
+
+print(f"Scanner de integridade finalizado. Relatório salvo em '{report_file}'")

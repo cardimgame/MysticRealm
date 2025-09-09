@@ -1,217 +1,219 @@
-# gameplay/scene_game.py — jogo isométrico com câmera lookahead, hitbox e save slots (3)
-import pygame, json
+
+# gameplay/scene_game.py — CameraV2.update + foco/zoom dinâmicos + flip opcional
+import pygame
 from typing import Optional
 from core.config import SCREEN_SIZE, TILE_W, TILE_H
-from core.tilemap_iso import IsoTileSet, IsoMap
+from core.camera_v2 import CameraV2
+from core.map_iso2 import IsoTileSet2 as IsoTileSet, IsoMap2 as IsoMap
+from core.iso_math2 import grid_to_screen, screen_to_grid
 from gameplay.player_iso import Player, set_map_offset
-from systems.iso_math import grid_to_screen
-from gameplay.inventory import Inventory
-try:
-    from core.camera_v2 import CameraV2 as CameraImpl
-    _CAMERA_MODE = "v2"
-except Exception:
-    from core.camera import Camera as CameraImpl
-    _CAMERA_MODE = "legacy"
-try:
-    from systems.mapgen_iso import generate_world as generate_iso_world
-    _WORLD_GEN = "world"
-except Exception:
-    from systems.mapgen_iso import generate as generate_iso_world
-    _WORLD_GEN = "classic"
-from core.asset import missing_assets
-from core.settings import load_settings
-from core.strings import t
-from ui.hud import draw_hud
 from gameplay.enemies_iso import EnemiesIso
 from gameplay.combat import draw_hitbox_debug
+from core.asset import missing_assets
+from core.strings import t
+from core.ui_fx import tint
+from core.props import PropsManager
+from systems.prop_factory import build_prop as _build_prop
+from core import props as _core_props
+from systems.mapgen_caelari import generate as generate_layers
+from core.settings import load_settings
+from systems.depth_group import DepthGroup
+from systems.overlap_zone import OverlapZone
+from core.fx_pipeline import PostFX
+
+_core_props.load_prop_image = _build_prop
 
 class SceneGame:
     def __init__(self, mgr, profile: Optional[dict] = None, loaded_state: Optional[dict] = None):
         self.mgr = mgr
-        self.profile = profile or {}
-        self.screen_w, self.screen_h = SCREEN_SIZE
-
-        if loaded_state and "map" in loaded_state:
-            data = loaded_state["map"]
-            self.layers = data["layers"]
-            start_r, start_c = loaded_state.get("player_rc", (data["player_start"][0], data["player_start"][1]))
-            self.pois = loaded_state.get('pois', {})
-            self._play_time = float(loaded_state.get('play_time', 0.0))
+        self.w, self.h = SCREEN_SIZE
+        st = load_settings()
+        self.lang = st.get('language', 'en-US')
+        # FX leves — desabilitados por padrão
+        self.fx_enabled_bloom = False
+        self.fx_enabled_dof = False
+        self.postfx = PostFX(st.get('fx_quality','half'))
+        # MAPA 128x128
+        result = generate_layers(rows=128, cols=128, seed=2025)
+        if len(result) == 4:
+            layers, pois, start_rc, props_rc = result
         else:
-            if _WORLD_GEN == "world":
-                data = generate_iso_world(cols=128, rows=128, mountain_frac=0.5, seed=2025)
-            else:
-                data = generate_iso_world(cols=64, rows=64)
-            self.layers = data["layers"]
-            start_r, start_c = data["player_start"]
-            self.pois = data.get("pois", {})
-            self._play_time = 0.0
-
+            layers, pois, start_rc = result
+            props_rc = []
         self.tileset = IsoTileSet()
-        self.tilemap = IsoMap(self.layers, self.tileset)
-        self.player = Player(start_r, start_c, profile=self.profile)
+        self.tilemap = IsoMap(layers, self.tileset)
         set_map_offset(self.tilemap.offset_x, self.tilemap.offset_y)
-        w, h = self.tilemap.world_bounds()
-        self.camera = CameraImpl(self.screen_w, self.screen_h, w, h)
-        if hasattr(self.camera, "set_profile"):
-            self.camera.set_profile(zoom=1.25)
-        px, py = grid_to_screen(self.player.r, self.player.c)
-        px += self.tilemap.offset_x; py += self.tilemap.offset_y
-        if hasattr(self.camera, "center_on"):
-            self.camera.center_on((px + TILE_W // 2, py + TILE_H // 2))
+        world_w, world_h = self.tilemap.world_bounds()
+        # Camera ISO estável com framing tipo OT2
+        self.camera = CameraV2(self.w, self.h, world_w, world_h, zoom=1.10)
+        self.cam_anchor = (0.50, 0.62)  # player pouco abaixo do centro
+        # Orientação visual (1 normal, -1 flip horizontal)
+        self.orient = 1
 
-        self.font = pygame.font.SysFont("consolas", 18)
-        self.inv = Inventory()
-        if loaded_state and "inventory" in loaded_state:
-            self.inv.gold = loaded_state["inventory"].get("gold", 0)
-            for k, v in loaded_state["inventory"].get("items", {}).items():
-                self.inv.items[k] = v
-
-        st = self.profile.get('stats', {}) or {}
-        self.vitals_max = {'HP': st.get('HP', 60), 'MP': st.get('MP', 30), 'STA': st.get('STA', 30)}
-        self.vitals = dict(self.vitals_max)
-
+        self.entities = DepthGroup()
+        self.player = Player(start_rc[0], start_rc[1], profile or {})
+        self.entities.add(self.player)
+        self.enemies = EnemiesIso(tilemap=self.tilemap, pois=pois)
+        for e in self.enemies.group.sprites():
+            self.entities.add(e)
+        self.props_mgr = PropsManager()
+        for p in props_rc:
+            r, c = int(p.get('r',0)), int(p.get('c',0))
+            x, y = grid_to_screen(r, c)
+            x += self.tilemap.offset_x
+            y += self.tilemap.offset_y
+            self.props_mgr.add_prop(p.get('key','unknown'), x, y-6, bool(p.get('collidable', True)))
+        self.overlaps: list[OverlapZone] = []
         self.paused = False
-        self.st = load_settings()
-        self.lang = self.st.get('language','en-US')
         self.pause_tabs = list(t('pause.tabs', self.lang))
-        self.quest_hint = None
-        self._show_inv = False
+        self.pause_sel = 0
+        self.font = pygame.font.SysFont('consolas', 18)
+        self._last_dt = 0.0
+        if loaded_state:
+            pr = loaded_state.get('player_rc')
+            if pr and isinstance(pr, (list, tuple)) and len(pr) == 2:
+                self.player.r, self.player.c = float(pr[0]), float(pr[1])
+                self.player.update(0.0)
+        # Render target opaco (sem alpha) para evitar ghosting
+        self._rt_size = None
+        self._rt = None
+        self._bg_color = (10, 12, 18)
 
-        self.enemies = EnemiesIso(tilemap=self.tilemap, pois=self.pois)
+    # --- helpers ---
+    def _ensure_rt(self):
+        vw = max(1, int(self.w / max(0.0001, float(self.camera.zoom))))
+        vh = max(1, int(self.h / max(0.0001, float(self.camera.zoom))))
+        size = (vw, vh)
+        if self._rt_size != size:
+            self._rt_size = size
+            self._rt = pygame.Surface(size).convert()
 
+    def _set_zoom(self, z: float):
+        z = max(0.85, min(1.50, float(z)))
+        self.camera.set_profile(zoom=z)
+        self._rt_size = None
+
+    # --- input / pause ---
     def handle(self, events):
         for e in events:
-            if e.type == pygame.QUIT:
-                self.mgr.running = False
-            elif e.type == pygame.KEYDOWN:
+            if e.type == pygame.KEYDOWN:
                 if e.key == pygame.K_ESCAPE:
                     self.paused = not self.paused
                     return
-            if self.paused:
-                if e.type == pygame.KEYDOWN:
-                    if e.key in (pygame.K_UP, pygame.K_w):
-                        idx = getattr(self, 'pause_sel', 0)
-                        setattr(self, 'pause_sel', (idx - 1) % len(self.pause_tabs))
-                    elif e.key in (pygame.K_DOWN, pygame.K_s):
-                        idx = getattr(self, 'pause_sel', 0)
-                        setattr(self, 'pause_sel', (idx + 1) % len(self.pause_tabs))
-                    elif e.key in (pygame.K_1, pygame.K_2, pygame.K_3):
-                        self._save_quick({pygame.K_1:1, pygame.K_2:2, pygame.K_3:3}[e.key])
-                    elif e.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        self._exec_pause()
-
-    def _build_save_data(self, with_extras: bool=False) -> dict:
-        loc = self._location_hint()
-        data = {
-            "profile": self.profile,
-            "inventory": {"gold": self.inv.gold, "items": dict(self.inv.items)},
-            "player_rc": (self.player.r, self.player.c),
-            "map": {"layers": self.layers, "player_start": (int(self.player.r), int(self.player.c))},
-        }
-        if with_extras:
-            data.update({
-                "play_time": int(self._play_time),
-                "location": loc,
-                "pois": self.pois,
-            })
-        return data
-
-    def _save_quick(self, slot:int):
-        from core.config import SAVES_DIR
-        path = SAVES_DIR / f"slot{int(slot)}.json"
-        data = self._build_save_data(with_extras=True)
-        try:
-            path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
-        except Exception:
-            pass
+                if e.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                    self._set_zoom(self.camera.zoom + 0.06)
+                elif e.key in (pygame.K_MINUS, pygame.K_UNDERSCORE, pygame.K_KP_MINUS):
+                    self._set_zoom(self.camera.zoom - 0.06)
+                elif e.key == pygame.K_q:
+                    # Alterna orientação visual (flip horizontal)
+                    self.orient = -1 if self.orient == 1 else 1
+            if self.paused and e.type == pygame.KEYDOWN:
+                if e.key in (pygame.K_UP, pygame.K_w):
+                    self.pause_sel = (self.pause_sel - 1) % len(self.pause_tabs)
+                elif e.key in (pygame.K_DOWN, pygame.K_s):
+                    self.pause_sel = (self.pause_sel + 1) % len(self.pause_tabs)
+                elif e.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    self._exec_pause()
+                    return
 
     def _exec_pause(self):
-        idx = getattr(self, 'pause_sel', 0)
-        cur = self.pause_tabs[idx]
-        if cur == t('pause.tabs', self.lang)[0]:
+        cur = (self.pause_tabs[self.pause_sel] or '').lower()
+        if 'continue' in cur or 'continuar' in cur:
             self.paused = False
-            return
-        save_label = t('pause.tabs', self.lang)[3] if len(t('pause.tabs', self.lang))>3 else 'Save'
-        if cur == save_label:
+        elif 'settings' in cur or 'configura' in cur:
+            from gameplay.scene_settings import SceneSettings
+            self.mgr.switch_to(SceneSettings(self.mgr, on_back=lambda: self.mgr.switch_to(self)))
+        elif 'save' in cur or 'salvar' in cur:
             from gameplay.scene_save_slots import SceneSaveSlots
-            self.mgr.switch_to(SceneSaveSlots(self.mgr, mode='save',
-                on_saved=lambda info: self.mgr.switch_to(self),
-                on_back=lambda: self.mgr.switch_to(self)))
-            return
-        exit_label = t('pause.tabs', self.lang)[4] if len(t('pause.tabs', self.lang))>4 else 'Exit'
-        if cur == exit_label:
+            self.mgr.switch_to(SceneSaveSlots(self.mgr, mode='save', on_saved=lambda _ : self.mgr.switch_to(self), on_back=lambda: self.mgr.switch_to(self)))
+        else:
             from gameplay.scene_mainmenu import SceneMainMenu
             self.mgr.switch_to(SceneMainMenu(self.mgr))
-            return
 
-    def _location_hint(self) -> str:
-        r, c = int(self.player.r), int(self.player.c)
-        if isinstance(self.pois.get('village_bbox'), (list, tuple)) and len(self.pois['village_bbox'])>=4:
-            top,left,h,w = self.pois['village_bbox']
-            if top <= r <= top+h and left <= c <= left+w:
-                return t('poi.village', self.lang)
-        caves = self.pois.get('cave_entrances') or []
-        for (rr,cc) in caves:
-            if (r-rr)**2 + (c-cc)**2 <= 25:
-                return t('poi.cave', self.lang)
-        if 'lake_bbox' in self.pois:
-            top,left,h,w = self.pois['lake_bbox']
-            if top <= r <= top+h and left <= c <= left+w:
-                return t('poi.lake', self.lang)
-        if 'mountain_bbox' in self.pois:
-            top,left,h,w = self.pois['mountain_bbox']
-            if top <= r <= top+h and left <= c <= left+w:
-                return t('poi.peak', self.lang)
-        return '—'
-
+    # --- update ---
     def update(self, dt: float):
-        if not self.paused:
-            self._play_time += float(dt)
-        self.player.update(dt)
-        px, py = grid_to_screen(self.player.r, self.player.c)
-        px += self.tilemap.offset_x; py += self.tilemap.offset_y
-        focus = (px + TILE_W // 2, py + TILE_H // 2)
+        self._last_dt = dt
+        if self.paused:
+            return
+        # 1) Input com cardinais puros + compensação do flip
+        self.player.handle_input(dt, cardinais_puros=True, screen_dir=getattr(self, 'orient', 1))
+        # 2) Atualiza player (sem retratar input)
+        self.player.update(dt, input_already_handled=True)
+
+        # 3) foco automático no inimigo mais próximo (se houver)
+        near = None; d2_best = 1e12
+        px, py = self.player.rect.center
+        for e in self.enemies.group.sprites():
+            ex, ey = e.rect.center
+            dx, dy = (ex - px), (ey - py)
+            d2 = dx*dx + dy*dy
+            if d2 < d2_best:
+                d2_best = d2; near = e
+        if near and d2_best < (600*600):
+            w = max(0.0, 1.0 - (d2_best ** 0.5) / 600.0)
+            alpha = 0.35 + 0.25 * w
+            fx = px * (1.0 - alpha) + near.rect.centerx * alpha
+            fy = py * (1.0 - alpha) + near.rect.centery * alpha
+        else:
+            fx, fy = px, py
+
+        # 4) âncora convertida para MUNDO (compensa zoom)
+        ax = (self.w * self.cam_anchor[0]) / max(1e-6, self.camera.zoom)
+        ay = (self.h * self.cam_anchor[1]) / max(1e-6, self.camera.zoom)
+        focus_world = (fx - ax, fy - ay)
+
+        # 5) velocidade do player em px de MUNDO (para lookahead)
         vx_px = (self.player.vel_c - self.player.vel_r) * (TILE_W / 2.0)
         vy_px = (self.player.vel_c + self.player.vel_r) * (TILE_H / 2.0)
-        if hasattr(self.camera, 'update'):
-            self.camera.update(dt, focus_px=focus, vel_px=(vx_px, vy_px))
-        elif hasattr(self.camera, 'follow'):
-            fake = pygame.Rect(focus[0], focus[1], 1, 1)
-            self.camera.follow(fake)
-        self.enemies.update(dt, (self.player.r, self.player.c), self.tilemap.offset_x, self.tilemap.offset_y)
-        if self.player.last_hitbox:
-            for enemy in list(self.enemies.group.sprites()):
-                if self.player.last_hitbox.colliderect(enemy.rect):
-                    self.enemies.group.remove(enemy)
-                    try:
-                        self.inv.add_gold(1)
-                    except Exception:
-                        pass
-                    if hasattr(self.camera, 'apply_shake'):
-                        self.camera.apply_shake(6.0)
 
+        # 6) atualiza câmera nativa (deadzone + lookahead)
+        self.camera.update(dt, focus_px=focus_world, vel_px=(vx_px, vy_px))
+
+        # 7) atualiza inimigos e sistemas dependentes
+        ox, oy = self.tilemap.offset_x, self.tilemap.offset_y
+        self.enemies.update(dt, player_rc=(self.player.r, self.player.c), ox=ox, oy=oy)
+        for e in self.enemies.group.sprites():
+            self.entities.mark_dirty(e)
+        for z in self.overlaps:
+            z.apply(self.player, self.entities)
+            for e in self.enemies.group.sprites():
+                z.apply(e, self.entities)
+
+        # 8) zoom dinâmico (abre em combate, fecha em exploração)
+        base = 1.12
+        if near and d2_best < (520*520):
+            z_target = 0.98
+        else:
+            z_target = base
+        z = self.camera.zoom + (z_target - self.camera.zoom) * 0.08
+        self.camera.set_profile(zoom=z)
+
+    # --- draw ---
     def draw(self, screen: pygame.Surface):
-        self.tilemap.draw(screen, self.camera)
-        screen.blit(self.player.image, self.camera.world_to_screen(self.player.rect.topleft))
-        self.enemies.draw_sorted(screen, self.camera)
-        if self.player.last_hitbox:
-            hr = self.player.last_hitbox.copy()
-            hr.topleft = self.camera.world_to_screen(hr.topleft)
-            draw_hitbox_debug(screen, hr)
-        miss = missing_assets()
-        if miss and self.st.get('show_missing', False):
-            y = 8
-            pane = pygame.Surface((self.screen_w, 84), pygame.SRCALPHA)
-            pane.fill((0,0,0,160))
-            screen.blit(pane, (0,0))
-            screen.blit(self.font.render(t('debug.missing', self.lang), True, (255,220,160)), (12, y)); y += 22
-            for p in miss[:2]:
-                screen.blit(self.font.render('- ' + p, True, (220,220,220)), (12, y)); y += 20
-            if len(miss) > 2:
-                more = f"... +{len(miss)-2}"
-                screen.blit(self.font.render(more, True, (200,200,200)), (12, y))
-        try:
-            draw_hud(screen, self)
-        except Exception:
-            pass
+        # 0) limpa tela principal e RT
+        screen.fill(self._bg_color)
+        self._ensure_rt()
+        rt = self._rt
+        rt.fill(self._bg_color)
+
+        # 1) desenha o mundo (zoom 1.0 na RT)
+        world_w, world_h = self.tilemap.world_bounds()
+        cam_draw = CameraV2(rt.get_width(), rt.get_height(), world_w, world_h, zoom=1.0)
+        cam_draw.x = self.camera.x
+        cam_draw.y = self.camera.y
+        self.tilemap.draw_visible(rt, cam_draw)
+        self.props_mgr.draw(rt, cam_draw, sort_by_y=True)
+        cam_rect = pygame.Rect(int(self.camera.x), int(self.camera.y), rt.get_width(), rt.get_height()).inflate(320, 240)
+        self.entities.draw_sorted(rt, cam_draw, clip_rect=cam_rect)
+        draw_hitbox_debug(rt, self.player.last_hitbox)
+
+        # 2) upscale para tela (visual zoom) e possível flip
+        if (rt.get_width(), rt.get_height()) != (self.w, self.h):
+            scaled = pygame.transform.smoothscale(rt, (self.w, self.h))
+            final = pygame.transform.flip(scaled, True, False) if getattr(self, 'orient', 1) == -1 else scaled
+            screen.blit(final, (0, 0))
+        else:
+            final = pygame.transform.flip(rt, True, False) if getattr(self, 'orient', 1) == -1 else rt
+            screen.blit(final, (0, 0))
+        # 3) overlays leves (opcionais)
+        # (Bloom/DOF desabilitados por padrão para evitar qualquer rastro)

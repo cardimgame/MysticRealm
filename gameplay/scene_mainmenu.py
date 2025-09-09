@@ -1,8 +1,6 @@
-
-# gameplay/scene_mainmenu.py — Main Menu Skyrim-like with i18n and dynamic "Continue"
-import pygame, math
+import pygame
 from core.asset import load_image_strict
-from core.ui_fx import blit_fit, make_vignette, make_grain, tint
+from core.ui_fx import blit_fit, blit_cover, make_vignette, make_grain, tint
 from core.settings import load_settings
 from core.strings import t
 from ui.theme import COLORS, SPACING, get_font
@@ -52,7 +50,7 @@ class SceneMainMenu:
                     from gameplay.scene_game import SceneGame
                     profile = data.get('profile', {})
                     self.mgr.switch_to(SceneGame(self.mgr, profile=profile, loaded_state=data))
-                    return
+            return
         if cur.startswith(t('main.options', self.lang)[0].lower()):
             from gameplay.scene_campaign import SceneCampaign
             self.mgr.switch_to(SceneCampaign(self.mgr))
@@ -72,15 +70,19 @@ class SceneMainMenu:
     def update(self, dt):
         self._t += dt
         self.menu.update(dt)
-        # Hot-reload language when changed in settings
         st = load_settings(); new_lang = st.get('language','en-US')
         if new_lang != self.lang:
             self.lang = new_lang
             self.options = self._build_options()
 
+    def on_resize(self, size):
+        self._fx_size = None
+
     def draw(self, screen):
+        st = load_settings()
+        mode = st.get('scale_mode','fit')
         if self.bg:
-            blit_fit(screen, self.bg)
+            (blit_cover if mode == 'cover' else blit_fit)(screen, self.bg)
         else:
             screen.fill(COLORS['bg'])
         self._ensure_fx(screen)

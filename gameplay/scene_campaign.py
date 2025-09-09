@@ -1,4 +1,4 @@
-
+# gameplay/scene_campaign.py
 import pygame
 from core.ui_fx import make_vignette, make_grain, tint
 from core.settings import load_settings
@@ -37,10 +37,9 @@ class SceneCampaign:
         self.menu.update(dt)
 
     def _exec(self):
-        # 0 New Game, 1 Load Game, 2 Delete Game, 3 Back
         if self.sel == 0:
-            from gameplay.char_create import SceneCharCreate
-            self.mgr.switch_to(SceneCharCreate(self.mgr, on_complete=lambda profile: self._start_game(profile)))
+            from gameplay.character.scene_create_v2 import SceneCreateV2
+            self.mgr.switch_to(SceneCreateV2(self.mgr, on_complete=lambda profile: self._start_game(profile)))
         elif self.sel == 1:
             from gameplay.scene_save_slots import SceneSaveSlots
             self.mgr.switch_to(SceneSaveSlots(self.mgr, mode='load', on_loaded=self._start_loaded, on_back=lambda: self.mgr.switch_to(self)))
@@ -66,6 +65,9 @@ class SceneCampaign:
             self._fx_size = size
             self.vignette = make_vignette(size, strength=0.75)
             self.grain = make_grain(size, intensity=22)
+
+    def on_resize(self, size):
+        self._fx_size = None
 
     def draw(self, screen):
         screen.fill(COLORS['bg'])

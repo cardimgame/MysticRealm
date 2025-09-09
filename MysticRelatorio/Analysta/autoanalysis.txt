@@ -1,0 +1,71 @@
+import os
+import ast
+
+# Pastas que serão analisadas
+target_dirs = [
+    r"C:\Users\ygcardim\Documents\Projetos\MysticRealm\core",
+    r"C:\Users\ygcardim\Documents\Projetos\MysticRealm\systems",
+    r"C:\Users\ygcardim\Documents\Projetos\MysticRealm\gameplay",
+    r"C:\Users\ygcardim\Documents\Projetos\MysticRealm\entities",
+    r"C:\Users\ygcardim\Documents\Projetos\MysticRealm\ui"
+]
+
+# Palavras-chave para detectar módulos
+keywords = {
+    "Player": ["player", "profile"],
+    "NPCs": ["npc", "enemy", "mob"],
+    "Quests": ["quest", "mission", "objective"],
+    "Loot/Inventory": ["loot", "inventory", "item", "equip"],
+    "Combat": ["combat", "attack", "skill", "damage"],
+    "Maps/Tiles": ["map", "tile", "level", "world"],
+    "Camera": ["camera"],
+    "UI": ["ui", "menu", "hud", "widget"]
+}
+
+# Armazena resultados
+modules_found = {k: [] for k in keywords}
+
+def analyze_file(file_path):
+    """Analisa classes e funções em um arquivo .py"""
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+    except Exception:
+        return []
+    
+    elements = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            elements.append(f"Class: {node.name}")
+        elif isinstance(node, ast.FunctionDef):
+            elements.append(f"Func: {node.name}")
+    return elements
+
+for folder in target_dirs:
+    if not os.path.exists(folder):
+        continue
+    for root, _, files in os.walk(folder):
+        for file in files:
+            if file.endswith(".py"):
+                file_path = os.path.join(root, file)
+                elements = analyze_file(file_path)
+                file_lower = file.lower()
+                for module, kw_list in keywords.items():
+                    if any(kw in file_lower for kw in kw_list):
+                        modules_found[module].append({
+                            "file": file_path,
+                            "elements": elements
+                        })
+
+# Exibe resultado
+for module, files in modules_found.items():
+    print(f"\n=== {module} ===")
+    if not files:
+        print("Nenhum arquivo detectado.")
+        continue
+    for f in files:
+        print(f"- {f['file']}")
+        for e in f["elements"]:
+            print(f"    {e}")
+
+print("\nAnálise funcional completa do projeto MysticRealm concluída.")

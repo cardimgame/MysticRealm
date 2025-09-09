@@ -1,0 +1,12 @@
+{
+  "auto_fix_enabled": true,
+  "log_level": "verbose",
+  "max_attempts": 3,
+"fixers": {
+  "optional_typing": true,
+  "argument_mismatch": true,
+  "none_attribute": true,
+  "missing_module": true
+},
+  "report_format": ["json", "txt"]
+}
