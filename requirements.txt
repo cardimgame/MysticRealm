@@ -6,3 +6,6 @@ openpyxl>=3.1,<3.2
 
 # Compat extra (só se rodar com Python < 3.11)
 typing-extensions; python_version < "3.11"
+
+# get-ChildItem -Path "C:\Users\ygcardim\Documents\Projeto\MysticRealm" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+
